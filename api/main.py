@@ -1,11 +1,23 @@
-from api.db_utils import insert_application_logs
+from dotenv import load_dotenv
+load_dotenv()
+
+from api.pydantic_models import DeleteFileRequest
+from api.chroma_utils import index_document_to_chroma, delete_doc_from_chroma
 from fastapi import FastAPI
-from api.db_utils import get_chat_history
+
+
+from api.db_utils import (
+    insert_application_logs,
+    get_chat_history,
+    get_all_documents,
+    insert_document_record,
+    delete_document_record,
+)
 import uuid
 import logging
 
 from api.langchain_utils import get_rag_chain
-from pydantic import QueryResponse, QueryInput
+from api.pydantic_models import QueryResponse, QueryInput, DocumentInfo
 
 app = FastAPI()
 
@@ -35,3 +47,63 @@ def chat(query_input: QueryInput):
 from fastapi import UploadFile, File, HTTPException
 import os
 import shutil
+
+
+@app.post("/upload-doc")
+def upload_and_index_document(file: UploadFile = File(...)):
+
+    print(f"File uploaded: {file.filename}")
+
+    allowed_extensions = [".pdf", ".docx", ".html"]
+    file_extensions = os.path.splitext(file.filename)[1].lower()
+
+    if file_extensions not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type. Allowed types are: {', '.join(allowed_extensions)}",
+        )
+    temp_file_path = f"temp_{file.filename}"
+
+    try:
+        with open(temp_file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        file_id = insert_document_record(file.filename)
+        success = index_document_to_chroma(temp_file_path, file_id)
+        if success:
+            return {
+                "message": f"File {file.filename} has been successfully uploaded and indexed.",
+                "file_id": file_id,
+            }
+        else:
+            delete_document_record(file_id)
+            raise HTTPException(
+                status_code=500, detail=f"Failed to index {file.filename}."
+            )
+    finally:
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
+
+
+@app.get("/list-docs", response_model=list[DocumentInfo])
+def list_documents():
+    return get_all_documents()
+
+
+@app.post("/delete-doc")
+def delete_document(request: DeleteFileRequest):
+    chromra_delete_success = delete_doc_from_chroma(request.file_id)
+    if chromra_delete_success:
+        db_delete_success = delete_document_record(request.file_id)
+        if db_delete_success:
+            return {
+                "message": f"Successfully deleted document with file_id {request.file_id}"
+            }
+        else:
+            return {
+                "error": f"Deleted from Chroma but failed to delete document with file_id {request.file_id} from the database."
+            }
+    else:
+        return {
+            "error": f"Failed to delete document with file_id {request.file_id} from Chroma."
+        }

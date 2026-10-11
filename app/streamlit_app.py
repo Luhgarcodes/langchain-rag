@@ -1,3 +1,4 @@
+from app.chat_interface import display_chat_interface
 import streamlit as st
 from app.sidebar import display_sidebar
 
@@ -14,8 +15,8 @@ def main():
 
     # Display the sidebar
     display_sidebar()
+    display_chat_interface()
 
 
 if __name__ == "__main__":
     main()
-
